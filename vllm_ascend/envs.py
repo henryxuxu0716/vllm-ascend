@@ -114,7 +114,7 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # rpc communication listening ip, which will be used to receive the agent metadata from the
     # remote worker.
     "VLLM_ASCEND_LLMDD_RPC_IP":
-    lambda: os.getenv("VLLM_ASCEND_LLMDD_RPC_IP", "0.0.0.0"),
+    lambda: os.getenv("VLLM_ASCEND_LLMDD_RPC_IP", "127.0.0.1"),
     # `LLMDataDistCMgrConnector` required variable. `VLLM_ASCEND_LLMDD_RPC_PORT` is used as the
     # rpc communication listening port, which will be used to receive the agent metadata from the
     # remote worker.

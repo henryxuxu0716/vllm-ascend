@@ -1,6 +1,9 @@
+import hashlib
+import hmac
 import math
 import os
 import pickle
+import secrets
 from dataclasses import dataclass
 from multiprocessing.shared_memory import SharedMemory
 from typing import Any, Callable, Optional
@@ -39,6 +42,41 @@ def get_cpu_offload_connector(vllm_config: VllmConfig) -> KVTransferConfig:
     return None
 
 
+_HMAC_KEY_ENV = "VLLM_ASCEND_METADATA_HMAC_KEY"
+
+
+def _get_hmac_key() -> bytes:
+    """Return the shared HMAC key used to authenticate IPC messages.
+
+    On the first call inside a process tree the key is generated and
+    stored in the environment so that child processes (workers) inherit
+    it automatically.
+    """
+    key_hex = os.environ.get(_HMAC_KEY_ENV)
+    if key_hex is None:
+        key_hex = secrets.token_hex(32)
+        os.environ[_HMAC_KEY_ENV] = key_hex
+    return bytes.fromhex(key_hex)
+
+
+def _sign_message(data: bytes) -> bytes:
+    """Return *digest + data* where digest is a 32-byte HMAC-SHA256."""
+    digest = hmac.new(_get_hmac_key(), data, hashlib.sha256).digest()
+    return digest + data
+
+
+def _verify_and_load(signed: bytes):
+    """Verify the HMAC signature and unpickle.  Raises on failure."""
+    if len(signed) < 32:
+        raise ValueError("Message too short to contain HMAC signature")
+    received_digest = signed[:32]
+    data = signed[32:]
+    expected_digest = hmac.new(_get_hmac_key(), data, hashlib.sha256).digest()
+    if not hmac.compare_digest(received_digest, expected_digest):
+        raise ValueError("HMAC verification failed – message rejected")
+    return pickle.loads(data)
+
+
 class MetadataServer:
     METADATA_SERVER_ADDRESS = f"ipc://{envs.VLLM_RPC_BASE_PATH}/metadata.ipc"
     DEFAULT_CPU_SWAP_SPACE_GB = 800
@@ -59,9 +97,9 @@ class MetadataServer:
         def call(self, func_name: str, *args, **kwargs) -> Any:
             request = (func_name, args, kwargs)
             self.socket.send(b"", zmq.SNDMORE)  # type: ignore
-            self.socket.send(pickle.dumps(request))
+            self.socket.send(_sign_message(pickle.dumps(request)))
             _ = self.socket.recv()
-            response = pickle.loads(self.socket.recv())
+            response = _verify_and_load(self.socket.recv())
             result, error = response
             if error:
                 logger.exception(f"call metadata sever error: {error}")
@@ -205,7 +243,7 @@ class MetadataServer:
         _ = self.socket.recv()
         raw_msg = self.socket.recv()
         try:
-            func_name, args, kwargs = pickle.loads(raw_msg)
+            func_name, args, kwargs = _verify_and_load(raw_msg)
         except Exception as e:
             response = (None, Exception(f"Invalid request: {str(e)}"))
         else:
@@ -220,7 +258,7 @@ class MetadataServer:
                 response = (None, NameError(f"Function {func_name} not found"))
         self.socket.send(client_id, zmq.SNDMORE)  # type: ignore
         self.socket.send(b"", zmq.SNDMORE)  # type: ignore
-        self.socket.send(pickle.dumps(response))
+        self.socket.send(_sign_message(pickle.dumps(response)))
 
     def shutdown(self):
         self.socket.close()

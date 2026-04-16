@@ -289,9 +289,10 @@ def get_lock(model_name_or_path: str | Path, cache_dir: str | None = None):
     hash_name = hashlib.sha256(model_name.encode()).hexdigest()
     # add hash to avoid conflict with old users' lock files
     lock_file_name = hash_name + model_name + ".lock"
-    # mode 0o666 is required for the filelock to be shared across users
+    # mode 0o644 allows all users to read the lock while only the
+    # owner can modify it, avoiding world-writable files (CWE-732).
     lock = filelock.FileLock(os.path.join(lock_dir, lock_file_name),
-                             mode=0o666)
+                             mode=0o644)
     return lock
 
 
