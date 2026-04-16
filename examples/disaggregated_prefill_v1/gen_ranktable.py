@@ -4,7 +4,8 @@ import os
 
 import torch.distributed as dist
 
-from vllm_ascend.utils import AscendSocVersion, init_ascend_soc_version, get_ascend_soc_version
+from vllm_ascend.utils import (AscendSocVersion, get_ascend_soc_version,
+                               init_ascend_soc_version)
 
 parser = argparse.ArgumentParser(
     description="Arguments of rank table generator", )
@@ -46,20 +47,28 @@ init_ascend_soc_version()
 soc_info = get_ascend_soc_version()
 
 
-def get_cmd_stdout(cmd):
+def get_cmd_stdout(cmd_args, grep_pattern=None):
     import subprocess
-    return subprocess.run(cmd, capture_output=True,
-                          shell=True).stdout.decode("utf-8").strip()
+    proc = subprocess.run(cmd_args, capture_output=True)
+    output = proc.stdout.decode("utf-8").strip()
+    if grep_pattern is not None:
+        for line in output.splitlines():
+            if grep_pattern in line:
+                return line.strip()
+        return ""
+    return output
 
 
 print(f"local_host: {local_host}")
 print("gen ranktable.json")
 
-num_cards = get_cmd_stdout("npu-smi info -l | grep \"Total Count\"").split(
-    ":")[1].strip()
+num_cards = get_cmd_stdout(
+    ["npu-smi", "info", "-l"], grep_pattern="Total Count"
+).split(":")[1].strip()
 num_cards = int(num_cards)
-chips_per_card = get_cmd_stdout("npu-smi info -l | grep \"Chip Count\"").split(
-    "\n")[0].split(":")[1].strip()
+chips_per_card = get_cmd_stdout(
+    ["npu-smi", "info", "-l"], grep_pattern="Chip Count"
+).split(":")[1].strip()
 chips_per_card = int(chips_per_card)
 
 if args.local_device_ids:
@@ -85,17 +94,21 @@ if local_rank == "0":
         card_id = device_id // chips_per_card
         if soc_info == AscendSocVersion.A3:
             device_ip = get_cmd_stdout(
-                f"{hccn_tool_path} -i {device_id} -vnic -g | grep ipaddr"
+                [hccn_tool_path, "-i", str(device_id), "-vnic", "-g"],
+                grep_pattern="ipaddr"
             ).split(":")[1].strip()
             super_device_id = get_cmd_stdout(
-                f"npu-smi info -t spod-info -i {card_id} -c {chip_id} | grep SDID"
+                ["npu-smi", "info", "-t", "spod-info", "-i", str(card_id), "-c", str(chip_id)],
+                grep_pattern="SDID"
             ).split(":")[1].strip()
             super_pod_id = get_cmd_stdout(
-                f"npu-smi info -t spod-info -i {card_id} -c {chip_id} | grep \"Super Pod ID\""
+                ["npu-smi", "info", "-t", "spod-info", "-i", str(card_id), "-c", str(chip_id)],
+                grep_pattern="Super Pod ID"
             ).split(":")[1].strip()
         else:
             device_ip = get_cmd_stdout(
-                f"{hccn_tool_path} -i {device_id} -ip -g | grep ipaddr"
+                [hccn_tool_path, "-i", str(device_id), "-ip", "-g"],
+                grep_pattern="ipaddr"
             ).split(":")[1].strip()
 
         device_info = {
